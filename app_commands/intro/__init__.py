@@ -14,8 +14,8 @@ This bot is used to manage CTFs within the Discord guild, monitor upcoming event
 and more.
 Be sure to learn the basics of its usage to collaborate effectively with the team 💪
 
-If you find this bot helpful, please ⭐ its [GitHub repository]\
-(https://github.com/hfz1337/Eruditus)!
+If you find this bot helpful, please ⭐ its [GitHub repository](https://github.com/1nv1sibl3/CTF-Bot)\
+!
 """,
         "image": None,
     },
@@ -52,18 +52,9 @@ If you forgot to click `Interested`, you can still join a CTF using `/ctf join` 
 A final reminder is sent in the `general` channel when the CTF begins.
 
 The bot creates the following channels:
-- 🤖-bot-cmds: for executing bot commands (to avoid spamming other channels).
-- 🔑-credentials: contains login credentials for the CTF platform.
-- 📝-notes: for communicating challenge progress to other members (use `Apps > Take \
-note` from a message context menu).
-- 📣-announcements: announces new challenges from the CTF platform. Notes:
-  - The bot checks for new challenges every 2 minutes (default).
-  - Use `/ctf pull` to force fetch challenges.
-  - Challenge announcements include a button to join the challenge (alternatively, \
-use `/ctf workon`).
 - 🎉-solves: announces solved challenges. Note:
   - Use `/ctf submit` for flag submissions, enabling the bot to track first bloods \
-and format announcements accordingly 🩸
+and format announcements accordingly 🩸 (Command depreciated)
   - If you forget to submit a flag through the bot, you can use `/ctf solve`.
   - For both of the above commands, you can use the optional `members` parameter to \
 tag people who contributed to solving the challenge (use `@`).

@@ -17,20 +17,20 @@ class Help(app_commands.Command):
         """Show help about the bot usage."""
         embed = (
             discord.Embed(
-                title="Eruditus - CTF helper bot",
-                url="https://github.com/hfz1337/Eruditus",
+                title="BlitzHack - CTF helper bot",
+                url="https://github.com/1nv1sibl3/CTF-Bot",
                 description=(
-                    "Eruditus is dedicated to CTF teams who communicate via Discord "
+                    "BlitzHack is a Discord bot designed to assist users "
                     "during CTF competitions.\n"
                     "Currently supported platforms: "
                     f"{', '.join(p.__name__ for p in Platform if p)}.\n"
                     f"Current revision: [`{COMMIT_HASH:.8}`]"
-                    f"(https://github.com/hfz1337/Eruditus/commit/{COMMIT_HASH})."
+                    f"(https://github.com/1nv1sibl3/CTF-Bot/{COMMIT_HASH})."
                 ),
                 colour=discord.Colour.blue(),
             )
             .set_thumbnail(url=interaction.client.user.display_avatar.url)
-            .set_footer(text="Made with ❤️ by hfz.")
+            .set_footer(text="Made with ❤️ by <@904280755734196224> ")
         )
 
         # Show help for global commands.
