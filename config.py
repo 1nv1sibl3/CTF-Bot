@@ -86,3 +86,9 @@ CTFTIME_TRACKING_CHANNEL = load_nullable_env_var("CTFTIME_TRACKING_CHANNEL", fac
 CTFTIME_LEADERBOARD_CHANNEL = load_nullable_env_var("CTFTIME_LEADERBOARD_CHANNEL", factory=int)
 
 MONGO = MongoClient(MONGODB_URI,server_api=ServerApi('1'))
+
+TIMEOUT = int(os.getenv("TIMEOUT"))
+MONGODB_WU_URI = os.getenv("MONGODB_WU_URI")
+WU_DATABASE = os.getenv("WU_DATABASE")
+WU_COLLECTION = os.getenv("WU_COLLECTION")
+

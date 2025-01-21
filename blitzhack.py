@@ -11,6 +11,7 @@ import discord
 from bson import ObjectId
 from discord.ext import tasks
 from discord.utils import setup_logging
+from pymongo.server_api import ServerApi
 
 import config
 from app_commands.bookmark import Bookmark
@@ -41,12 +42,19 @@ from config import (
     TEAM_EMAIL,
     TEAM_NAME,
     USER_AGENT,
+    USER_AGENT, 
+    TIMEOUT, 
+    MONGODB_WU_URI, 
+    WU_DATABASE,
+    WU_COLLECTION
 )
+
 from lib.ctftime.events import scrape_event_info
 from lib.ctftime.leaderboard import get_ctftime_leaderboard
 from lib.ctftime.misc import ctftime_date_to_datetime
 from lib.ctftime.teams import get_ctftime_team_info
 from lib.ctftime.types import CTFTimeDiffType
+from lib.ctftime.spider import *
 from lib.discord_util import get_challenge_category_channel, send_scoreboard
 from lib.platforms import PlatformCTX, match_platform
 from lib.util import (
@@ -181,6 +189,7 @@ class BlitzHack(discord.Client):
         self.challenge_puller.start()
         self.ctftime_team_tracking.start()
         self.ctftime_leaderboard_tracking.start()
+        self.run_ctftime_crawler.start()
 
     async def on_ready(self) -> None:
         for guild in self.guilds:
@@ -190,7 +199,7 @@ class BlitzHack(discord.Client):
         await self.tree.sync()
         await self.tree.sync(guild=discord.Object(id=GUILD_ID))
 
-        await self.change_presence(activity=discord.Game(name="/help"))
+        await self.change_presence(activity=discord.Game(name="Hacking Google!"))
 
     async def on_guild_join(self, guild: discord.Guild) -> None:
         logger.info("%s joined %s!", self.user, guild)
@@ -971,6 +980,61 @@ class BlitzHack(discord.Client):
         traceback.print_exc()
         self.ctftime_leaderboard_tracking.restart()
 
+    @tasks.loop(hours=1)
+    async def run_ctftime_crawler(self) -> None:
+        mongo = MongoClient(MONGODB_WU_URI,  server_api=ServerApi('1'))
+
+        if WU_DATABASE not in mongo.list_database_names():
+            Logger.info("Creating index...")
+            mongo[WU_DATABASE][WU_COLLECTION].create_index(
+                [
+                    ("name", "text"),
+                    ("tags", "text"),
+                    ("ctftime_content", "text"),
+                    ("blog_content", "text"),
+                ],
+                default_language="english",
+            )
+            Logger.success("Index created.")
+        else:
+            Logger.success("Index already created.")
+
+        latest_writeup_id = get_latest_writeup_id()
+        crawled = [
+            writeup["id"]
+            for writeup in mongo[WU_DATABASE][WU_COLLECTION].find(
+                projection={"id": True, "_id": False}
+            )
+        ]
+        missing = [
+            writeup_id
+            for writeup_id in range(1, latest_writeup_id + 1)
+            if writeup_id not in crawled
+        ]
+
+        missing_len = len(missing)
+        if missing_len == 0:
+            Logger.success("We're up to date, nothing to crawl.")
+            return
+
+        Logger.info(f"Crawling {missing_len} write-up(s)...")
+        for idx, writeup_id in enumerate(missing):
+            writeup_ctftime_url = f"{CTFTIME_URL}/writeup/{writeup_id}"
+            draw_progress_bar(idx, missing_len)
+            Logger.info(f"Attempting to crawl {writeup_ctftime_url}...")
+
+            writeup, code = scrape_writeup_info(writeup_id)
+            if code == 200:
+                try:
+                    mongo[WU_DATABASE][WU_COLLECTION].insert_one(writeup)
+                    Logger.success(f"{writeup_ctftime_url} crawled successfully.")
+                except Exception as err:
+                    Logger.error(f"{writeup_ctftime_url} crawling failed: {err}")
+            elif code == 404:
+                mongo[WU_DATABASE][WU_COLLECTION].insert_one(writeup)
+                Logger.info(f"{writeup_ctftime_url} not found.")
+            else:
+                Logger.error(f"{writeup_ctftime_url} crawling failed.")  
 
 if __name__ == "__main__":
     setup_logging()
