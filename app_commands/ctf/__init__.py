@@ -12,6 +12,14 @@ from bson import ObjectId
 from discord import app_commands
 from discord.app_commands import Choice
 
+import os
+import json
+from typing import Optional, Union
+
+# Define a constant for your flag log channel ID.
+FLAG_LOG_CHANNEL_ID = 1285142704631578663  # Replace with your actual channel ID
+FLAG_LOGS_FOLDER = "flag_logs"
+
 from config import (
     CHALLENGE_COLLECTION,
     CTF_COLLECTION,
@@ -108,24 +116,18 @@ class CTF(app_commands.Group):
     async def _challenge_autocompletion_func(
         self, interaction: discord.Interaction, current: str
     ) -> list[Choice[str]]:
-        """Autocomplete challenge name.
+        """Autocomplete challenge name."""
 
-        This function is inefficient, might improve it later.
+        # Quick response to prevent Discord timeout
+        placeholder = [Choice(name="Loading...", value="loading")]
 
-        Args:
-            interaction: The interaction that triggered this command.
-            current: The challenge name typed so far.
-
-        Returns:
-            A list of suggestions.
-        """
-        ctf = get_ctf_info(guild_category=interaction.channel.category_id)
+        ctf = get_ctf_info(guild_category=interaction.channel.category_id)  
         if ctf is None:
-            return []
+            return [Choice(name="No challenges found", value="None")]
 
         suggestions = []
         for challenge_id in ctf["challenges"]:
-            challenge = get_challenge_info(_id=challenge_id)
+            challenge = get_challenge_info(_id=challenge_id)  # Ensure async DB call
             if challenge is None or challenge["solved"]:
                 continue
 
@@ -135,7 +137,8 @@ class CTF(app_commands.Group):
 
             if len(suggestions) == 25:
                 break
-        return suggestions
+
+        return suggestions or placeholder
 
     @app_commands.checks.bot_has_permissions(manage_channels=True, manage_roles=True)
     @app_commands.checks.has_permissions(manage_channels=True, manage_roles=True)
@@ -202,14 +205,14 @@ class CTF(app_commands.Group):
         members: Optional[str] = None,
         name: Optional[str] = None,
     ):
-        """Archive a CTF by deleting its channels (except general) and moving general to archived category.
+        """Archive a CTF by making its channels read-only by default.
 
         Args:
             interaction: The interaction that triggered this command.
             permissions: Whether channels should be read-only or writable
-            as well (default: read only).
+               as well (default: read only).
             members: A list of member or role mentions to be granted access into the
-            private threads.
+               private threads.
             name: CTF name (default: current channel's CTF).
         """
 
@@ -352,41 +355,39 @@ class CTF(app_commands.Group):
             await message.edit(content=members)
             await message.delete()
 
-        # Find or create the "archived" category
-        archived_category = discord.utils.get(
-            interaction.guild.categories, name="archived"
-        )
-        if not archived_category:
-            archived_category = await interaction.guild.create_category("archived")
+        # Change channels permissions according to the `permissions` parameter.
+        members = [
+            member
+            async for member in interaction.guild.fetch_members(limit=None)
+            if role in member.roles
+        ]
 
-        # Move general channel to archived category and set permissions
+        perm_rdwr = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        perm_rdonly = discord.PermissionOverwrite(
+            read_messages=True, send_messages=False
+        )
+
         ctf_general_channel = discord.utils.get(
             interaction.guild.text_channels,
             category_id=ctf["guild_category"],
             name="general",
         )
-        
-        if ctf_general_channel:
-            # Set permissions for general channel
-            overwrites = {
-                interaction.guild.default_role: discord.PermissionOverwrite(
-                    read_messages=True,
-                    send_messages=False
-                )
-            }
-            await ctf_general_channel.edit(
-                category=archived_category,
-                overwrites=overwrites,
-                name=f"archived-{ctf['name']}-general"
+        overwrites = {member: perm_rdwr for member in members}
+        overwrites[interaction.guild.default_role] = discord.PermissionOverwrite(
+            read_messages=False
+        )
+        await ctf_general_channel.edit(overwrites=overwrites)
+
+        for member in members:
+            overwrites[member] = (
+                perm_rdonly if permissions == Permissions.RDONLY else perm_rdwr
             )
 
-        # Delete all other channels in the category
-        for channel in category_channel.channels:
-            if channel != ctf_general_channel:
-                await channel.delete()
-
-        # Delete the category itself
-        await category_channel.delete()
+        await category_channel.edit(name=f"🔒 {ctf['name']}", overwrites=overwrites)
+        for ctf_channel in category_channel.channels:
+            if ctf_channel.name == "general":
+                continue
+            await ctf_channel.edit(sync_permissions=True)
 
         # Delete the CTF role.
         if role:
@@ -406,7 +407,6 @@ class CTF(app_commands.Group):
             await interaction.edit_original_response(content=msg)
             return
         await interaction.followup.send(content=msg)
-
 
     @app_commands.checks.bot_has_permissions(manage_channels=True, manage_roles=True)
     @app_commands.checks.has_permissions(manage_channels=True, manage_roles=True)
@@ -876,54 +876,95 @@ class CTF(app_commands.Group):
     @app_commands.command()
     @_in_ctf_channel()
     async def solve(
-        self, interaction: discord.Interaction, members: Optional[str] = None
+        self, 
+        interaction: discord.Interaction, 
+        flag: str, 
+        members: Optional[str] = None
     ) -> None:
-        """Mark the challenge as solved.
+        """Mark the challenge as solved and log the submitted flag.
 
         Args:
             interaction: The interaction that triggered this command.
+            flag: The flag submitted for the challenge.
             members: List of member mentions who contributed in solving the challenge.
         """
         await interaction.response.defer()
 
         challenge = get_challenge_info(thread=interaction.channel_id)
         if challenge is None:
-            # If we didn't find any challenge that corresponds to the thread from which
-            # the command was run, then we're probably in the wrong thread.
+            # If no challenge corresponds to the current thread, inform the user.
             await interaction.followup.send(
-                "You may only run this command in the thread associated to the "
-                "challenge.",
+                "You may only run this command in the thread associated to the challenge.",
                 ephemeral=True,
             )
             return
 
         # If the challenge was already solved.
         if challenge["solved"]:
-            await interaction.followup.send(
-                "This challenge was already solved.", ephemeral=True
-            )
+            await interaction.followup.send("This challenge was already solved.", ephemeral=True)
             return
 
+        # --- FLAG LOGGING SECTION START ---
+        # Ensure the flag_logs folder exists.
+        if not os.path.exists(FLAG_LOGS_FOLDER):
+            os.makedirs(FLAG_LOGS_FOLDER)
+
+        user_file = os.path.join(FLAG_LOGS_FOLDER, f"{interaction.user.id}.json")
+
+        # Load existing flag log data if the file exists.
+        if os.path.exists(user_file):
+            with open(user_file, "r") as f:
+                flag_data = json.load(f)
+        else:
+            flag_data = {}
+
+        # Retrieve CTF information for the current channel.
+        ctf = get_ctf_info(guild_category=interaction.channel.category_id)
+        ctf_name = ctf["name"] if ctf and "name" in ctf else "Unknown CTF"
+
+        # Update the flag log: For this CTF, log the flag for this challenge.
+        if ctf_name not in flag_data:
+            flag_data[ctf_name] = {}
+        flag_data[ctf_name][challenge["name"]] = flag
+
+        # Save the updated flag data.
+        with open(user_file, "w") as f:
+            json.dump(flag_data, f, indent=4)
+
+        # Send an embed to the designated flag log channel.
+        flag_log_channel = interaction.client.get_channel(FLAG_LOG_CHANNEL_ID)
+        flag_embed = discord.Embed(
+            title="Flag Submission Logged",
+            description=(
+                f"{interaction.user.mention} submitted a flag for **{challenge['name']}** in **{ctf_name}**.\n"
+                f"Flag: `{flag}`"
+            ),
+            colour=discord.Colour.blue(),
+            timestamp=datetime.now(),
+        )
+        if flag_log_channel:
+            await flag_log_channel.send(embed=flag_embed)
+        # --- FLAG LOGGING SECTION END ---
+
+        # Continue with marking the challenge as solved.
         challenge["solved"] = True
         challenge["solve_time"] = int(datetime.now().timestamp())
-
         solvers = await parse_challenge_solvers(interaction, challenge, members)
 
-        ctf = get_ctf_info(guild_category=interaction.channel.category_id)
         solves_channel = interaction.client.get_channel(ctf["guild_channels"]["solves"])
         embed = discord.Embed(
             title="🎉 Challenge solved!",
             description=(
-                f"**{', '.join(solvers)}** just solved "
-                f"**{challenge['name']}** from the "
-                f"**{challenge['category']}** category!"
+                f"**{', '.join(solvers)}** just solved **{challenge['name']}** "
+                f"from the **{challenge['category']}** category!"
             ),
             colour=discord.Colour.dark_gold(),
             timestamp=datetime.now(),
         ).set_thumbnail(url=interaction.user.display_avatar.url)
-        solve_announcement = await solves_channel.send(embed=embed)
 
+        solve_announcement = await solves_channel.send(embed=embed)
         challenge["solve_announcement"] = solve_announcement.id
+
         MONGO[DBNAME][CHALLENGE_COLLECTION].update_one(
             {"_id": challenge["_id"]},
             {
@@ -941,9 +982,7 @@ class CTF(app_commands.Group):
             interaction.guild.text_channels,
             id=ctf["guild_channels"]["announcements"],
         )
-        announcement = await announcements_channel.fetch_message(
-            challenge["announcement"]
-        )
+        announcement = await announcements_channel.fetch_message(challenge["announcement"])
         await announcement.edit(view=WorkonButton(oid=challenge["_id"], disabled=True))
 
         await interaction.followup.send("✅ Challenge solved.")
@@ -952,8 +991,7 @@ class CTF(app_commands.Group):
             ephemeral=True,
         )
 
-        # We leave editing the channel name till the end since we might get rate
-        # limited, causing a sleep that will block this function call.
+        # Edit the channel name from ❌ to ✅.
         await interaction.channel.edit(name=interaction.channel.name.replace("❌", "✅"))
 
         # Mark the CTF category maxed if all its challenges were solved.
