@@ -11,7 +11,7 @@ import discord
 from bson import ObjectId
 from discord.ext import tasks
 from discord.utils import setup_logging
-from pymongo.server_api import ServerApi
+from collections import namedtuple
 
 import config
 from app_commands.bookmark import Bookmark
@@ -42,19 +42,12 @@ from config import (
     TEAM_EMAIL,
     TEAM_NAME,
     USER_AGENT,
-    USER_AGENT, 
-    TIMEOUT, 
-    MONGODB_WU_URI, 
-    WU_DATABASE,
-    WU_COLLECTION
 )
-
 from lib.ctftime.events import scrape_event_info
 from lib.ctftime.leaderboard import get_ctftime_leaderboard
 from lib.ctftime.misc import ctftime_date_to_datetime
 from lib.ctftime.teams import get_ctftime_team_info
 from lib.ctftime.types import CTFTimeDiffType
-from lib.ctftime.spider import *
 from lib.discord_util import get_challenge_category_channel, send_scoreboard
 from lib.platforms import PlatformCTX, match_platform
 from lib.util import (
@@ -135,6 +128,23 @@ class BlitzHack(discord.Client):
             role: discord.PermissionOverwrite(read_messages=True, send_messages=False),
         }
 
+        bot_cmds_channel = await guild.create_text_channel(
+            name="🤖-bot-cmds",
+            category=category_channel,
+            overwrites={
+                guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                role: discord.PermissionOverwrite(read_messages=True),
+            },
+        )
+        credentials_channel = await guild.create_text_channel(
+            name="🔑-credentials", category=category_channel, overwrites=overwrites
+        )
+        notes_channel = await guild.create_text_channel(
+            name="📝-notes", category=category_channel, overwrites=overwrites
+        )
+        announcement_channel = await guild.create_text_channel(
+            name="📣-announcements", category=category_channel, overwrites=overwrites
+        )
         solves_channel = await guild.create_text_channel(
             name="🎉-solves", category=category_channel, overwrites=overwrites
         )
@@ -156,30 +166,37 @@ class BlitzHack(discord.Client):
             "guild_role": role.id,
             "guild_category": category_channel.id,
             "guild_channels": {
+                "announcements": announcement_channel.id,
+                "credentials": credentials_channel.id,
                 "scoreboard": scoreboard_channel.id,
                 "solves": solves_channel.id,
+                "notes": notes_channel.id,
+                "bot-cmds": bot_cmds_channel.id,
             },
         }
         MONGO[DBNAME][CTF_COLLECTION].insert_one(ctf)
         return ctf
 
     async def setup_hook(self) -> None:
-        # Register commands.
-        self.tree.add_command(Help())
-        self.tree.add_command(Syscalls())
-        self.tree.add_command(Revshell())
-        self.tree.add_command(Encoding())
-        self.tree.add_command(CTFTime())
-        self.tree.add_command(Cipher())
-        self.tree.add_command(Report())
-        self.tree.add_command(Request())
-        self.tree.add_command(Search())
-        self.tree.add_command(Bookmark(), guild=discord.Object(GUILD_ID))
-        self.tree.add_command(TakeNote(), guild=discord.Object(GUILD_ID))
-        self.tree.add_command(CTF(), guild=discord.Object(GUILD_ID))
-        self.tree.add_command(Intro(), guild=discord.Object(GUILD_ID))
+        guild = discord.Object(GUILD_ID)
+        self.tree.add_command(Help(), guild=guild)
+        self.tree.add_command(Syscalls(), guild=guild)
+        self.tree.add_command(Revshell(), guild=guild)
+        self.tree.add_command(Encoding(), guild=guild)
+        self.tree.add_command(CTFTime(), guild=guild)
+        self.tree.add_command(Cipher(), guild=guild)
+        self.tree.add_command(Report(), guild=guild)
+        self.tree.add_command(Request(), guild=guild)
+        self.tree.add_command(Search(), guild=guild)
+        self.tree.add_command(Bookmark(), guild=guild)
+        self.tree.add_command(TakeNote(), guild=guild)
+        self.tree.add_command(CTF(), guild=guild)
+        self.tree.add_command(Intro(), guild=guild)
 
-        # Restore `workon` buttons.
+        # Sync the commands for the specific guild
+        await self.tree.sync(guild=guild)
+
+        # Restore workon buttons and start your tasks...
         for challenge in MONGO[DBNAME][CHALLENGE_COLLECTION].find({"solved": False}):
             self.add_view(WorkonButton(oid=challenge["_id"]))
 
@@ -189,7 +206,8 @@ class BlitzHack(discord.Client):
         self.challenge_puller.start()
         self.ctftime_team_tracking.start()
         self.ctftime_leaderboard_tracking.start()
-        self.run_ctftime_crawler.start()
+
+
 
     async def on_ready(self) -> None:
         for guild in self.guilds:
@@ -199,7 +217,7 @@ class BlitzHack(discord.Client):
         await self.tree.sync()
         await self.tree.sync(guild=discord.Object(id=GUILD_ID))
 
-        await self.change_presence(activity=discord.Game(name="Hacking Google!"))
+        await self.change_presence(activity=discord.Game(name="Hacking your life."))
 
     async def on_guild_join(self, guild: discord.Guild) -> None:
         logger.info("%s joined %s!", self.user, guild)
@@ -357,7 +375,7 @@ class BlitzHack(discord.Client):
             )
             await category_channel.edit(name=category_channel.name.replace("🔴", "🏁"))
 
-    @tasks.loop(minutes=5, reconnect=True)
+    @tasks.loop(minutes=60, reconnect=True)
     async def ctf_reminder(self) -> None:
         """Create a CTF for events starting soon and send a reminder."""
         # Wait until the bot's internal cache is ready.
@@ -388,7 +406,7 @@ class BlitzHack(discord.Client):
                 continue
 
             remaining_time = scheduled_event.start_time - local_time
-            if remaining_time > timedelta(hours=1):
+            if remaining_time > timedelta(hours=24):
                 continue
 
             event_name = scheduled_event.name
@@ -427,7 +445,7 @@ class BlitzHack(discord.Client):
                 await reminder_channel.send(
                     f"🔔 CTF `{ctf['name']}` starting "
                     f"<t:{scheduled_event.start_time.timestamp():.0f}:R>.\n"
-                    f"@here you can still use `/ctf join` to participate in case "
+                    f"You can still use `/ctf join` to participate in case "
                     f"you forgot to hit the `Interested` button of the event."
                 )
 
@@ -774,7 +792,7 @@ class BlitzHack(discord.Client):
         for ctf in MONGO[DBNAME][CTF_COLLECTION].find({"ended": False}):
             await send_scoreboard(ctf, guild=guild)
 
-    @tasks.loop(minutes=15, reconnect=True)
+    @tasks.loop(minutes=1, reconnect=True)
     async def ctftime_team_tracking(self) -> None:
         # Wait until the bot's internal cache is ready.
         await self.wait_until_ready()
@@ -883,6 +901,7 @@ class BlitzHack(discord.Client):
 
         self.previous_team_info = team_info
 
+    
     @tasks.loop(minutes=15, reconnect=True)
     async def ctftime_leaderboard_tracking(self) -> None:
         # Wait until the bot's internal cache is ready.
@@ -980,61 +999,6 @@ class BlitzHack(discord.Client):
         traceback.print_exc()
         self.ctftime_leaderboard_tracking.restart()
 
-    @tasks.loop(hours=1)
-    async def run_ctftime_crawler(self) -> None:
-        mongo = MongoClient(MONGODB_WU_URI,  server_api=ServerApi('1'))
-
-        if WU_DATABASE not in mongo.list_database_names():
-            Logger.info("Creating index...")
-            mongo[WU_DATABASE][WU_COLLECTION].create_index(
-                [
-                    ("name", "text"),
-                    ("tags", "text"),
-                    ("ctftime_content", "text"),
-                    ("blog_content", "text"),
-                ],
-                default_language="english",
-            )
-            Logger.success("Index created.")
-        else:
-            Logger.success("Index already created.")
-
-        latest_writeup_id = get_latest_writeup_id()
-        crawled = [
-            writeup["id"]
-            for writeup in mongo[WU_DATABASE][WU_COLLECTION].find(
-                projection={"id": True, "_id": False}
-            )
-        ]
-        missing = [
-            writeup_id
-            for writeup_id in range(1, latest_writeup_id + 1)
-            if writeup_id not in crawled
-        ]
-
-        missing_len = len(missing)
-        if missing_len == 0:
-            Logger.success("We're up to date, nothing to crawl.")
-            return
-
-        Logger.info(f"Crawling {missing_len} write-up(s)...")
-        for idx, writeup_id in enumerate(missing):
-            writeup_ctftime_url = f"{CTFTIME_URL}/writeup/{writeup_id}"
-            draw_progress_bar(idx, missing_len)
-            Logger.info(f"Attempting to crawl {writeup_ctftime_url}...")
-
-            writeup, code = scrape_writeup_info(writeup_id)
-            if code == 200:
-                try:
-                    mongo[WU_DATABASE][WU_COLLECTION].insert_one(writeup)
-                    Logger.success(f"{writeup_ctftime_url} crawled successfully.")
-                except Exception as err:
-                    Logger.error(f"{writeup_ctftime_url} crawling failed: {err}")
-            elif code == 404:
-                mongo[WU_DATABASE][WU_COLLECTION].insert_one(writeup)
-                Logger.info(f"{writeup_ctftime_url} not found.")
-            else:
-                Logger.error(f"{writeup_ctftime_url} crawling failed.")  
 
 if __name__ == "__main__":
     setup_logging()
